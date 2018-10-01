@@ -370,5 +370,5 @@ cpu = args[4]
 res = read_moff(moff, meta) %>%
   preprocess %>%
   summarise
-if (summarise_only != 1 fs)
-quantify(res, cpu)
+if (summarise_only != 1)
+  quantify(res, cpu)
