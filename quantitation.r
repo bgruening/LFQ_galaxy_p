@@ -441,7 +441,7 @@ args = commandArgs(trailingOnly=TRUE)
 moff = args[1]
 meta = args[2]
 summarise_only = args[3]
-cpu = args[4]
+cpu = strtoi(args[4])
 
 res = read_moff(moff, meta) %>%
   preprocess %>%
