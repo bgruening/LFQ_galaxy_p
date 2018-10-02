@@ -23,6 +23,81 @@ MSnSet2df = function(msnset){
   as_data_frame(dt)
 }
 
+## robust summarisation
+do_robust_summaristion = function(msnset, group_var = Proteins, keep_fData_cols = NULL, nIter = 20,
+                                  sum_fun = summarizeRobust){
+  ## TODO use funture_map instead of mutate to speed up
+  ## Uses assumption that featureNames and sampleNames exist in every msnset
+  ## Can also be used for multiple rounds of normalization, e.g. first from PSMs to peptides, then from peptides to proteins
+  system.time({## Time how long it takes
+    group_var <- enquo(group_var) ;#group_var = quo(Proteins)
+  ## Make tidy dataframe from Msnset
+    df <- MSnSet2df(msnset)
+    ## Do summarisision according defined groups
+    dt <- filter(df, !is.na(expression)) %>% group_by(!!group_var) %>%
+      mutate(expression = sum_fun(expression, feature, sample, nIter = nIter)) %>%
+      dplyr::select(!!group_var, sample, expression) %>%
+      ## collapse to one value per group
+      distinct
+    ## Construct an Msnset object from dataframe
+    dt_exprs <- spread(dt, sample, expression) %>% ungroup
+    exprs_data <- dplyr::select(dt_exprs, - !!group_var) %>% as.matrix
+    rownames(exprs_data) <- as.character(pull(dt_exprs, !!group_var))
+
+    fd <- dplyr::select(dt_exprs,!!group_var)
+
+    ##Select the group variable and all variables you want to keep
+    if (!is.null(keep_fData_cols)){
+      fd_ext <- dplyr::select(df, !!group_var, one_of(keep_fData_cols)) %>% distinct
+      if(nrow(fd)!=nrow(fd_ext)){
+        stop("Values in the \"group_var\" column can only correspond to a single value in the \"keep_fData_cols\" column.")
+      }
+      fd <- left_join(fd,fd_ext)
+    }
+
+    fd <- as.data.frame(fd)
+    rownames(fd) <- as.character(pull(fd, !!group_var))
+    out <- MSnSet(exprs_data, fData = AnnotatedDataFrame(fd) , pData = pData(msnset)[colnames(exprs_data),,drop = FALSE])
+  }) %>% print
+  out
+}
+
+summarizeRobust <- function(expression, feature, sample, nIter=100,...) {
+  ## Assumes that intensities mx are already log-transformed
+  ## characters are faster to construct and work with then factors
+  feature <- as.character(feature)
+  ##If there is only one 1 peptide for all samples return expression of that peptide
+  if (length(unique(feature)) == 1L) return(expression)
+  sample <- as.character(sample)
+  ## modelmatrix breaks on factors with 1 level so make vector of ones (will be intercept)
+  if (length(unique(sample)) == 1L) sample = rep(1,length(sample))
+
+  ## sum contrast on peptide level so sample effect will be mean over all peptides instead of reference level
+  X = model.matrix(~ -1 + sample + feature,contrasts.arg = list(feature = 'contr.sum'))
+  ## MasS::rlm breaks on singulare values.
+  ## check with base lm if singular values are present.
+  ## if so, these coefficients will be zero, remove this collumn from model matrix
+  ## rinse and repeat on reduced modelmatrx till no singular values are present
+  repeat {
+    fit = .lm.fit(X,expression)
+    id = fit$coefficients != 0
+    X = X[ , id, drop =FALSE]
+    if (!any(!id)) break
+  }
+  ## Last step is always rlm
+  fit = MASS::rlm(X,expression,maxit = nIter,...)
+  ## Only return the estimated effects effects as summarised values
+  sampleid = seq_along(unique(sample))
+  return(X[,sampleid,drop = FALSE] %*% fit$coefficients[sampleid])
+}
+
+
+
+
+
+
+
+
 ## mixed models
 ###############
 setGeneric (
@@ -338,7 +413,8 @@ summarise = function(set){
   if (ncol(set) == 1){
     set = combineFeatures(set,fun="median", groupBy = fData(set)$protein,cv = FALSE)
   } else {
-    set = combineFeatures(set,fun="robust", groupBy = fData(set)$protein,cv = FALSE)
+    ## set = combineFeatures(set,fun="robust", groupBy = fData(set)$protein,cv = FALSE)
+    set = do_robust_summaristion(set,protein)
   }
   exprs(set) %>% as.data.frame %>% rownames_to_column('protein') %>% write_tsv('summarised_proteins.tsv')
   print('END SUMMARISATION')
